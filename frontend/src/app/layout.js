@@ -1,0 +1,23 @@
+import "./globals.css";
+// import 'highlight.js/styles/atom-one-dark.min.css';
+import { AppProviders } from '../components/providers/AppProviders';
+
+export const metadata = {
+  title: "Ticket Form Builder",
+  description: "Auth + dashboard + CSM ticket form builder, extracted from mediaJira",
+  icons: {
+    icon: "/icon.svg",
+  },
+};
+
+export default function RootLayout({ children }) {
+  return (
+    <html lang="en">
+      <head>
+      </head>
+      <body>
+        <AppProviders>{children}</AppProviders>
+      </body>
+    </html>
+  );
+}

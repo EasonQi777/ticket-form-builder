@@ -1,0 +1,1055 @@
+import logging
+
+from django.contrib.auth import get_user_model
+from django.db import transaction
+from django.db.models import Q
+from django.shortcuts import get_object_or_404
+from django.utils import timezone
+from rest_framework import status, viewsets
+from core.slug_mixins import SlugLookupViewSetMixin, resolve_lookup_kwargs, resolve_project_pk
+from rest_framework.decorators import action
+from rest_framework.exceptions import PermissionDenied, ValidationError
+from rest_framework.permissions import IsAuthenticated
+from rest_framework.response import Response
+from rest_framework.views import APIView
+
+from core.admin_utils import assign_org_admin
+from core.models import Organization, Project, ProjectInvitation, ProjectMember, Role
+from core.permissions import (
+    CanManageProjectMembers,
+    IsProjectMember,
+    can_invite_project_members,
+    IsProjectOwner,
+    can_manage_project_members,
+)
+from core.serializers import (
+    AcceptInvitationSerializer,
+    ProjectInvitationSerializer,
+    ProjectMemberInviteSerializer,
+    ProjectMemberSerializer,
+    ProjectOnboardingSerializer,
+    ProjectSerializer,
+    ProjectSummarySerializer,
+)
+from core.services.project_initialization import ProjectInitializationService
+from core.utils.invitations import accept_invitation, create_project_invitation, send_invitation_email
+from core.utils.kpi_suggestions import get_kpi_suggestions
+from core.utils.project_calendars import (
+    ensure_project_calendar,
+    soft_delete_project_calendars,
+)
+from notifications.action_urls import overview_action_url
+
+logger = logging.getLogger(__name__)
+User = get_user_model()
+
+
+class CheckProjectMembershipView(APIView):
+    """Return project membership metadata for authenticated users."""
+
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        user = request.user
+        memberships = ProjectMember.objects.filter(user=user, is_active=True)
+        project_count = memberships.count()
+        active_project_id = user.active_project_id if user.active_project else None
+
+        return Response(
+            {
+                'has_project': project_count > 0,
+                'active_project_id': active_project_id,
+                'project_count': project_count,
+            }
+        )
+
+
+class ProjectOnboardingView(APIView):
+    """Handle the multi-step onboarding wizard for creating a project."""
+
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        serializer = ProjectOnboardingSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+
+        user = request.user
+        organization = getattr(user, 'organization', None)
+        if not organization:
+            organization = self._ensure_organization_for_user(user)
+            if not organization:
+                return Response(
+                    {'error': 'User must belong to an organization to create projects.'},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
+        data = serializer.validated_data
+
+        owner = self._resolve_owner(user, data.get('owner_id'))
+        if isinstance(owner, Response):
+            return owner
+
+        advertising_platforms = data.get('advertising_platforms', [])
+        if data.get('advertising_platforms_other') and 'other' not in advertising_platforms:
+            advertising_platforms.append('other')
+
+        project = Project.objects.create(
+            name=data['name'],
+            description=data.get('description'),
+            organization=organization,
+            owner=owner,
+            project_type=data.get('project_type', []),
+            work_model=data.get('work_model', []),
+            advertising_platforms=advertising_platforms,
+            objectives=data.get('objectives', []),
+            kpis=data.get('kpis', {}),
+            budget_management_type=data.get('budget_management_type'),
+            total_monthly_budget=data.get('total_monthly_budget'),
+            pacing_enabled=data.get('pacing_enabled', False),
+            budget_config=data.get('budget_config', {}),
+            primary_audience_type=data.get('primary_audience_type'),
+            audience_targeting=data.get('audience_targeting', {}),
+        )
+
+        # Ensure creator membership
+        ProjectMember.objects.update_or_create(
+            user=user,
+            project=project,
+            defaults={'role': 'owner', 'is_active': True},
+        )
+
+        # Ensure owner membership
+        ProjectMember.objects.update_or_create(
+            user=owner,
+            project=project,
+            defaults={'role': 'owner', 'is_active': True},
+        )
+
+        ensure_project_calendar(project)
+
+        # Set active project
+        user.active_project = project
+        user.save(update_fields=['active_project'])
+
+        # Invite existing members (basic implementation)
+        self._handle_member_invites(project, data.get('invite_members', []))
+
+        # Initialize project services (best-effort)
+        try:
+            ProjectInitializationService.initialize_project(project)
+        except Exception as exc:  # pragma: no cover - safeguard
+            logger.warning("Project initialization failed for project %s: %s", project.id, exc)
+
+        project_data = ProjectSerializer(project, context={'request': request}).data
+        project_data['is_active'] = True
+
+        return Response(project_data, status=status.HTTP_201_CREATED)
+
+    def _resolve_owner(self, default_owner, owner_id):
+        if not owner_id:
+            return default_owner
+        if owner_id == default_owner.id:
+            return default_owner
+        try:
+            owner = User.objects.get(id=owner_id)
+        except User.DoesNotExist:
+            return Response({'error': 'Specified owner was not found.'}, status=status.HTTP_400_BAD_REQUEST)
+        if owner.organization_id != default_owner.organization_id:
+            return Response(
+                {'error': 'Owner must belong to the same organization as the creator.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        return owner
+
+    def _handle_member_invites(self, project, invite_members):
+        if not invite_members:
+            return
+
+        for invite in invite_members:
+            email = invite.get('email')
+            role = invite.get('role', 'member')
+            if not email:
+                continue
+
+            try:
+                invited_user = User.objects.get(email=email)
+            except User.DoesNotExist:
+                logger.info("Invite skipped for %s (user does not exist yet)", email)
+                continue
+
+            ProjectMember.objects.update_or_create(
+                user=invited_user,
+                project=project,
+                defaults={'role': role, 'is_active': True},
+            )
+            actor = self.request.user
+            if invited_user.id != actor.id:
+                try:
+                    from notifications.models import NotificationCategory, NotificationEventType  # noqa: PLC0415
+                    from notifications.services import create_notification  # noqa: PLC0415
+                    create_notification(
+                        recipient_id=invited_user.id,
+                        actor_id=actor.id,
+                        category=NotificationCategory.COLLABORATION,
+                        event_type=NotificationEventType.PROJECT_INVITE,
+                        title=f"You've been added to project: {project.name}",
+                        body=f"You were added to the project \"{project.name}\".",
+                        related_object_type="project",
+                        related_object_id=str(project.id),
+                        action_url=overview_action_url(),
+                        metadata={"project_name": project.name},
+                    )
+                except Exception:
+                    logger.exception(
+                        "Failed to send PROJECT_INVITE notification for user %s", invited_user.id
+                    )
+
+    def _ensure_organization_for_user(self, user):
+        from customer.models import CustomerOrganisation
+        from csm.models import CustomerUser
+
+        base_name = f"{user.username}'s Organisation"
+        name = base_name
+        suffix = 1
+        while Organization.objects.filter(name=name).exists():
+            suffix += 1
+            name = f"{base_name} {suffix}"
+        email = getattr(user, 'email', '') or ''
+        domain = email.split('@')[-1].lower() if '@' in email else None
+        organization = Organization.objects.create(name=name, email_domain=domain)
+
+        user.organization = organization
+        user.save(update_fields=['organization'])
+
+        # Create a CustomerOrganisation + admin CustomerUser so CSM features work
+        cust_org, created = CustomerOrganisation.objects.get_or_create(
+            organization=organization,
+            defaults={'name': organization.name},
+        )
+        CustomerUser.objects.get_or_create(
+            user=user,
+            organisation=cust_org,
+            defaults={
+                'user_type': 'admin',
+                'is_active': True,
+                'is_creator': True,
+            },
+        )
+        assign_org_admin(user, organization)
+
+        return organization
+
+
+class KPISuggestionsView(APIView):
+    """Return merged KPI suggestions for provided objectives."""
+
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        objectives_param = request.query_params.get('objectives', '')
+        objectives = [item.strip() for item in objectives_param.split(',') if item.strip()]
+
+        if not objectives:
+            return Response(
+                {'error': 'objectives query parameter is required (comma-separated list).'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        suggestions = get_kpi_suggestions(objectives)
+
+        return Response(
+            {
+                'objectives': objectives,
+                'suggested_kpis': suggestions,
+                'count': len(suggestions),
+            }
+        )
+
+
+class ProjectViewSet(SlugLookupViewSetMixin, viewsets.ModelViewSet):
+    """
+    ViewSet for Project model with project membership filtering.
+    
+    Endpoints:
+    - GET /api/core/projects/ - List user's projects (with filtering)
+    - POST /api/core/projects/ - Create simple project
+    - GET /api/core/projects/{id}/ - Get project details
+    - PATCH /api/core/projects/{id}/ - Update project
+    - POST /api/core/projects/{id}/set-active/ - Set as active project
+    """
+
+    serializer_class = ProjectSerializer
+    permission_classes = [IsAuthenticated]
+
+    def get_queryset(self):
+        """Filter projects by user's access level."""
+        from core.admin_utils import get_org_admin_org_ids
+
+        user = self.request.user
+
+        # Base: projects where user has active membership
+        member_ids = ProjectMember.objects.filter(
+            user=user, is_active=True,
+        ).values_list('project_id', flat=True)
+
+        org_ids = get_org_admin_org_ids(user)
+        if org_ids:
+            queryset = Project.objects.filter(
+                Q(id__in=member_ids) | Q(organization_id__in=org_ids)
+            ).distinct()
+        else:
+            queryset = Project.objects.filter(id__in=member_ids)
+
+        queryset = queryset.select_related('organization', 'owner')
+
+        # Filter by active_only query parameter
+        active_only = self.request.query_params.get('active_only', 'false').lower() == 'true'
+        if active_only and user.active_project:
+            queryset = queryset.filter(id=user.active_project_id)
+
+        return queryset.order_by('-created_at')
+
+    def get_permissions(self):
+        """Set permissions based on action."""
+        if self.action in ['update', 'partial_update', 'destroy']:
+            return [IsAuthenticated(), IsProjectOwner()]
+        return [IsAuthenticated()]
+
+    def perform_create(self, serializer):
+        """Create project and add user as owner.
+
+        If the user has no Organization yet, one is auto-created from their
+        email prefix and they become its admin (via CustomerUser).
+        """
+        user = self.request.user
+        organization = getattr(user, 'organization', None)
+
+        if not organization:
+            organization = self._auto_create_organization(user)
+
+        project = serializer.save(
+            organization=organization,
+            owner=user,
+        )
+
+        # Create project membership
+        ProjectMember.objects.create(
+            user=user,
+            project=project,
+            role='owner',
+            is_active=True
+        )
+
+        # Set as active project if user has no active project
+        if not user.active_project:
+            user.active_project = project
+            user.save(update_fields=['active_project'])
+
+        ensure_project_calendar(project)
+
+        return project
+
+    @staticmethod
+    def _auto_create_organization(user):
+        """Auto-create an Organization for a user who doesn't have one yet."""
+        from customer.models import CustomerOrganisation
+        from csm.models import CustomerUser
+
+        org_name = f"{user.username}'s Organisation"
+
+        # Ensure uniqueness
+        base_name = org_name
+        counter = 1
+        while Organization.objects.filter(name=org_name).exists():
+            counter += 1
+            org_name = f"{base_name} ({counter})"
+
+        organization = Organization.objects.create(name=org_name)
+
+        # Link user to the new organization
+        user.organization = organization
+        user.save(update_fields=['organization'])
+
+        # Also create a CustomerOrganisation so CSM features work
+        cust_org, _ = CustomerOrganisation.objects.get_or_create(
+            organization=organization,
+            defaults={'name': org_name},
+        )
+
+        # Make user the admin (and creator) of the CSM org
+        CustomerUser.objects.get_or_create(
+            user=user,
+            organisation=cust_org,
+            defaults={
+                'user_type': 'admin',
+                'is_active': True,
+                'is_creator': True,
+            },
+        )
+        assign_org_admin(user, organization)
+
+        return organization
+
+    def perform_destroy(self, instance):
+        """Delete project and soft-delete related calendars."""
+        with transaction.atomic():
+            soft_delete_project_calendars(instance)
+            instance.task_set.all().delete()
+            instance.meetings.all().delete()
+            instance.delete()
+
+    @action(detail=True, methods=['post'])
+    def set_active(self, request, pk=None):
+        """Set project as user's active project."""
+        project = self.get_object()
+        user = request.user
+
+        # Verify user is a member
+        membership = ProjectMember.objects.filter(
+            user=user,
+            project=project,
+            is_active=True
+        ).first()
+
+        if not membership:
+            return Response(
+                {'error': 'You are not a member of this project'},
+                status=status.HTTP_403_FORBIDDEN
+            )
+
+        # Set as active project
+        user.active_project = project
+        user.save(update_fields=['active_project'])
+
+        serializer = ProjectSummarySerializer(project, context={'request': request})
+        return Response({
+            'message': 'Active project updated successfully',
+            'active_project': serializer.data
+        })
+
+class ProjectMemberViewSet(viewsets.ModelViewSet):
+    """
+    ViewSet for managing project members.
+    Nested under projects.
+    
+    Endpoints:
+    - GET /api/core/projects/{project_id}/members/ - List project members
+    - POST /api/core/projects/{project_id}/members/ - Invite user to project
+    - PATCH /api/core/projects/{project_id}/members/{id}/ - Update member role
+    - DELETE /api/core/projects/{project_id}/members/{id}/ - Remove member
+    """
+
+    serializer_class = ProjectMemberSerializer
+    permission_classes = [IsAuthenticated]
+    owner_transfer_default_role = 'Team Leader'
+
+    def get_queryset(self):
+        """Filter members by project."""
+        from core.utils.bot_user import AGENT_BOT_EMAIL
+
+        project_id = self.kwargs.get('project_id')
+        project = get_object_or_404(Project, id=resolve_project_pk(project_id))
+
+        # Verify user is a member
+        if not ProjectMember.objects.filter(
+            user=self.request.user,
+            project=project,
+            is_active=True
+        ).exists():
+            return ProjectMember.objects.none()
+
+        # Exclude bot users from member list
+        # Bot users are system-managed and automatically added to projects,
+        # they should not appear in the regular member list UI
+        return ProjectMember.objects.filter(
+            project=project,
+            is_active=True
+        ).exclude(
+            user__email=AGENT_BOT_EMAIL  # Exclude agent bot user
+        ).select_related('user', 'project')
+
+    def get_permissions(self):
+        """Set permissions based on action."""
+        if self.action in ['update', 'partial_update', 'destroy']:
+            # Restrict role changes and removals to privileged roles.
+            return [IsAuthenticated(), CanManageProjectMembers()]
+        # For list/retrieve/create: object-level management permissions are handled
+        # inside the endpoints (create is owner-only).
+        return [IsAuthenticated()]
+
+    def _transfer_project_owner(self, instance, actor):
+        project = instance.project
+        previous_owner = project.owner
+        new_owner = instance.user
+
+        with transaction.atomic():
+            if previous_owner and previous_owner.id != instance.user_id:
+                previous_owner_membership = ProjectMember.objects.filter(
+                    project=project,
+                    user=previous_owner,
+                    is_active=True,
+                ).first()
+                if previous_owner_membership and previous_owner_membership.role == 'owner':
+                    previous_owner_membership.role = self.owner_transfer_default_role
+                    previous_owner_membership.save(update_fields=['role'])
+
+            project.owner = instance.user
+            project.save(update_fields=['owner'])
+
+            if instance.role != 'owner':
+                instance.role = 'owner'
+                instance.save(update_fields=['role'])
+
+            ensure_project_calendar(project)
+
+        self._notify_new_project_owner(project, new_owner, actor, previous_owner)
+
+    def _notify_new_project_owner(self, project, new_owner, actor, previous_owner):
+        if not new_owner or not actor:
+            return
+        try:
+            from notifications.models import NotificationCategory, NotificationEventType  # noqa: PLC0415
+            from notifications.services import create_notification  # noqa: PLC0415
+
+            actor_display = actor.get_full_name() or actor.username
+            previous_owner_display = None
+            if previous_owner and previous_owner.id != new_owner.id:
+                previous_owner_display = previous_owner.get_full_name() or previous_owner.username
+
+            create_notification(
+                recipient_id=new_owner.id,
+                actor_id=actor.id,
+                category=NotificationCategory.COLLABORATION,
+                event_type=NotificationEventType.ACCOUNT_PERMISSION,
+                title=f"You are now the owner of project: {project.name}",
+                body=(
+                    f"{actor_display} transferred project ownership of "
+                    f"\"{project.name}\" to you."
+                ),
+                related_object_type="project",
+                related_object_id=str(project.id),
+                action_url=overview_action_url(),
+                metadata={
+                    "project_name": project.name,
+                    "project_id": project.id,
+                    "action": "project_owner_transferred",
+                    "previous_owner": previous_owner_display,
+                },
+            )
+        except Exception:
+            logger.exception(
+                "Failed to send project owner transfer notification for user %s",
+                getattr(new_owner, "id", None),
+            )
+
+    def update(self, request, *args, **kwargs):
+        partial = kwargs.get('partial', False)
+        instance = self.get_object()
+        requested_role = request.data.get('role')
+        if requested_role == 'owner':
+            self._transfer_project_owner(instance, request.user)
+            instance.refresh_from_db()
+            return Response(self.get_serializer(instance).data)
+        serializer = self.get_serializer(instance, data=request.data, partial=partial)
+        serializer.is_valid(raise_exception=True)
+
+        desired_role = serializer.validated_data.get('role')
+        if desired_role == 'owner':
+            self._transfer_project_owner(instance, request.user)
+            instance.refresh_from_db()
+            return Response(self.get_serializer(instance).data)
+
+        if (
+            desired_role
+            and instance.role == 'owner'
+            and instance.project.owner_id == instance.user_id
+            and desired_role != 'owner'
+        ):
+            raise ValidationError(
+                {'role': 'Transfer project ownership before changing the owner role.'}
+            )
+
+        response = super().update(request, *args, **kwargs)
+        instance.refresh_from_db()
+        return response
+
+    def check_object_permissions(self, request, obj):
+        """Override to check project permissions for member objects."""
+        # For destroy action, ensure user has a privileged project role.
+        if self.action == 'destroy':
+            project = obj.project
+            if not can_manage_project_members(request.user, project):
+                raise PermissionDenied('Only privileged project roles can remove members')
+        super().check_object_permissions(request, obj)
+
+    def create(self, request, *args, **kwargs):
+        """Invite user to project."""
+        project_id = self.kwargs.get('project_id')
+        project = get_object_or_404(Project, id=resolve_project_pk(project_id))
+
+        # Invite is owner-only: verify actor is the authoritative project owner
+        user = request.user
+        if not can_invite_project_members(user, project):
+            raise PermissionDenied('Only project owner can invite members')
+
+        # Use ProjectMemberInviteSerializer for validation
+        invite_serializer = ProjectMemberInviteSerializer(
+            data=request.data,
+            context={"request": request},
+        )
+        invite_serializer.is_valid(raise_exception=True)
+
+        email = invite_serializer.validated_data['email']
+        role = invite_serializer.validated_data.get('role', 'member')
+
+        # Check if user exists
+        try:
+            invited_user = User.objects.get(email=email)
+        except User.DoesNotExist:
+            invited_user = None
+
+        if invited_user and ProjectMember.objects.filter(
+            user=invited_user,
+            project=project,
+            is_active=True,
+        ).exists():
+            raise ValidationError({
+                'email': 'User is already a member of this project'
+            })
+
+        # NOTE: the original mediaJira app enforced a purchased-seat cap here via
+        # the `stripe_meta` billing app, which is out of scope for this
+        # extracted project - see README "Known simplifications". No seat
+        # limit is enforced here; every invite is allowed to proceed.
+
+        try:
+            invitation = create_project_invitation(
+                email=email,
+                project=project,
+                invited_by=user,
+                role=role,
+                auto_approve=False
+            )
+
+            # Immediately notify the invited user (if they already have an account)
+            # so they see it in the notification panel without waiting for email acceptance.
+            if invited_user and invited_user.id != user.id:
+                try:
+                    from notifications.models import NotificationCategory, NotificationEventType  # noqa: PLC0415
+                    from notifications.services import create_notification  # noqa: PLC0415
+                    create_notification(
+                        recipient_id=invited_user.id,
+                        actor_id=user.id,
+                        category=NotificationCategory.COLLABORATION,
+                        event_type=NotificationEventType.PROJECT_INVITE,
+                        title=f"You've been invited to project: {project.name}",
+                        body=f"{user.get_full_name() or user.username} invited you to join \"{project.name}\".",
+                        related_object_type="project",
+                        related_object_id=str(project.id),
+                        action_url=overview_action_url(),
+                        metadata={
+                            "project_name": project.name,
+                            "invitation_id": invitation.pk,
+                        },
+                    )
+                except Exception:
+                    logger.exception(
+                        "Failed to send PROJECT_INVITE notification for user %s", invited_user.id
+                    )
+
+            invitation_serializer = ProjectInvitationSerializer(invitation, context={'request': request})
+            message = 'Invitation created and pending owner approval.'
+            return Response(
+                {
+                    'message': message,
+                    'invitation': invitation_serializer.data,
+                    'user_exists': invited_user is not None
+                },
+                status=status.HTTP_201_CREATED
+            )
+        except Exception as e:
+            logger.error(f"Failed to create invitation: {e}", exc_info=True)
+            raise ValidationError({
+                'email': f'Failed to send invitation: {str(e)}'
+            })
+
+    def perform_destroy(self, instance):
+        """Remove member from project."""
+        # Only the authoritative project owner (project.owner_id) cannot be removed.
+        # Co-owners (role='owner' but not project.owner) can be removed normally.
+        if instance.user_id == instance.project.owner_id:
+            raise ValidationError({
+                'error': 'Cannot remove the project owner. Transfer ownership first.'
+            })
+
+        removed_user = instance.user
+        project = instance.project
+        actor = self.request.user
+
+        # Deactivate instead of delete
+        instance.is_active = False
+        instance.save()
+
+        # Notify the removed user (skip self-removal)
+        if removed_user.id != actor.id:
+            try:
+                from notifications.models import NotificationCategory, NotificationEventType  # noqa: PLC0415
+                from notifications.services import create_notification, revoke_access_to_resource  # noqa: PLC0415
+                create_notification(
+                    recipient_id=removed_user.id,
+                    actor_id=actor.id,
+                    category=NotificationCategory.COLLABORATION,
+                    event_type=NotificationEventType.ACCOUNT_PERMISSION,
+                    title=f"Removed from project: {project.name}",
+                    body=f"You have been removed from the project \"{project.name}\".",
+                    related_object_type="project",
+                    related_object_id=str(project.id),
+                    action_url=overview_action_url(),
+                    metadata={
+                        "project_name": project.name,
+                        "action": "removed_from_project",
+                        "revoked_access": True,  # User no longer has access to this project
+                    },
+                )
+                # Revoke access to all historical project notifications
+                revoke_access_to_resource(
+                    user_id=removed_user.id,
+                    object_type="project",
+                    object_id=str(project.id)
+                )
+            except Exception:
+                logger.exception(
+                    "Failed to send removal notification for user %s", removed_user.id
+                )
+
+
+class ListProjectAvailableRolesView(APIView):
+    """
+    Return available project roles for the current organization.
+
+    Used by frontend role dropdowns:
+    - Invitation role selection (owner is not included)
+    - Member role editing (owner is also excluded; ownership transfer is separate)
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, project_id: int):
+        project = get_object_or_404(Project, id=resolve_project_pk(project_id))
+
+        # Prevent leaking role definitions to non-members.
+        if not ProjectMember.objects.filter(
+            user=request.user,
+            project=project,
+            is_active=True,
+        ).exists():
+            return Response(
+                {'error': 'You do not have access to this project'},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        # Keep role names in sync with frontend `getRoleBadgeClasses()` switch cases.
+        # `owner` is excluded from dropdown responses.
+        base_roles = {
+            "member",
+            "viewer",
+            "Approver",
+            "Reviewer",
+            "Super Administrator",
+            "Organization Admin",
+            "Team Leader",
+            "Campaign Manager",
+            "Budget Controller",
+            "Data Analyst",
+            "Senior Media Buyer",
+            "Specialist Media Buyer",
+            "Junior Media Buyer",
+            "Designer",
+            "Copywriter",
+        }
+
+        user_org = getattr(request.user, "organization", None)
+        role_qs = Role.objects.filter(is_deleted=False)
+        if user_org:
+            role_qs = role_qs.filter(Q(organization=user_org) | Q(organization__isnull=True))
+        else:
+            role_qs = role_qs.filter(organization__isnull=True)
+
+        role_names = set(role_qs.values_list("name", flat=True))
+
+        allowed_roles = (base_roles | role_names) - {"owner"}
+
+        roles = [
+            {"value": role_name, "label": role_name}
+            for role_name in sorted(allowed_roles)
+        ]
+        return Response(
+            {
+                "roles": roles,
+                "default_role": "member",
+            },
+            status=status.HTTP_200_OK,
+        )
+
+
+class AcceptInvitationView(APIView):
+    """
+    Accept a project invitation.
+    If user doesn't exist, creates a new user account.
+    """
+
+    permission_classes = []  # Public endpoint
+
+    def post(self, request):
+        serializer = AcceptInvitationSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+
+        token = serializer.validated_data['token']
+        password = serializer.validated_data.get('password')
+        username = serializer.validated_data.get('username')
+
+        # Check if user is authenticated
+        user = request.user if request.user.is_authenticated else None
+
+        # If user is authenticated, verify email matches invitation
+        if user:
+            try:
+                invitation = ProjectInvitation.objects.get(token=token, accepted=False)
+                if invitation.email != user.email:
+                    return Response(
+                        {
+                            'error': 'Invitation email does not match your account email',
+                        },
+                        status=status.HTTP_400_BAD_REQUEST,
+                    )
+            except ProjectInvitation.DoesNotExist:
+                return Response(
+                    {'error': 'Invalid or already accepted invitation token'},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
+        try:
+            invitation, user, user_created = accept_invitation(
+                token=token,
+                user=user,
+                password=password,
+                username=username,
+            )
+
+            # Generate tokens for new users
+            from rest_framework_simplejwt.tokens import RefreshToken
+
+            refresh = RefreshToken.for_user(user)
+            from core.serializers import UserSummarySerializer
+
+            user_data = UserSummarySerializer(user).data
+
+            response_data = {
+                'message': 'Invitation accepted successfully',
+                'user': user_data,
+                'project': ProjectSummarySerializer(invitation.project, context={'request': request}).data,
+                'user_created': user_created,
+            }
+
+            if user_created:
+                response_data['token'] = str(refresh.access_token)
+                response_data['refresh'] = str(refresh)
+
+            return Response(response_data, status=status.HTTP_200_OK)
+
+        except ValueError as e:
+            return Response({'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
+        except Exception as e:
+            logger.error(f"Error accepting invitation: {e}", exc_info=True)
+            return Response(
+                {'error': 'Failed to accept invitation. Please try again.'},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
+
+
+class ResendInvitationView(APIView):
+    """Resend an invitation email."""
+
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, invitation_id):
+        try:
+            invitation = ProjectInvitation.objects.get(id=invitation_id)
+
+            # Verify user has permission (must be project member)
+            if not ProjectMember.objects.filter(
+                user=request.user,
+                project=invitation.project,
+                is_active=True,
+            ).exists():
+                return Response(
+                    {'error': 'You do not have permission to resend this invitation'},
+                    status=status.HTTP_403_FORBIDDEN,
+                )
+
+            # Check if already accepted
+            if invitation.accepted:
+                return Response(
+                    {'error': 'Invitation has already been accepted'},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            if not invitation.approved:
+                return Response(
+                    {'error': 'Invitation is pending owner approval'},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
+            # Resend email
+            send_invitation_email(invitation)
+
+            return Response(
+                {
+                    'message': 'Invitation email resent successfully',
+                    'invitation': ProjectInvitationSerializer(invitation).data,
+                },
+                status=status.HTTP_200_OK,
+            )
+
+        except ProjectInvitation.DoesNotExist:
+            return Response(
+                {'error': 'Invitation not found'},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+
+class ListProjectInvitationsView(APIView):
+    """List pending invitations for a project."""
+
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, project_id):
+        project = get_object_or_404(Project, id=resolve_project_pk(project_id))
+
+        # Verify user is a project member
+        if not ProjectMember.objects.filter(
+            user=request.user,
+            project=project,
+            is_active=True,
+        ).exists():
+            return Response(
+                {'error': 'You do not have access to this project'},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        # Get pending invitations
+        invitations = ProjectInvitation.objects.filter(
+            project=project,
+            accepted=False,
+            approved=True,
+        ).select_related('invited_by', 'project').order_by('-created_at')
+
+        serializer = ProjectInvitationSerializer(invitations, many=True, context={'request': request})
+        return Response(serializer.data, status=status.HTTP_200_OK)
+
+
+class ListMyProjectInvitationsView(APIView):
+    """List pending invitations for the authenticated user."""
+
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        project_id = request.query_params.get('project_id')
+        invitations = ProjectInvitation.objects.filter(
+            email=request.user.email,
+            accepted=False,
+            expires_at__gt=timezone.now(),
+        ).select_related('invited_by', 'project').order_by('-created_at')
+
+        if project_id:
+            resolved_pid = resolve_project_pk(project_id)
+            invitations = invitations.filter(project_id=resolved_pid) if resolved_pid else invitations.none()
+
+        serializer = ProjectInvitationSerializer(invitations, many=True, context={'request': request})
+        return Response(serializer.data, status=status.HTTP_200_OK)
+
+
+class ListPendingInvitationApprovalsView(APIView):
+    """List invitations awaiting owner approval."""
+
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, project_id):
+        project = get_object_or_404(Project, id=resolve_project_pk(project_id))
+
+        if not can_manage_project_members(request.user, project):
+            return Response(
+                {'error': 'Only privileged project roles can review invitations'},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        invitations = ProjectInvitation.objects.filter(
+            project=project,
+            accepted=False,
+            approved=False,
+        ).select_related('invited_by', 'project').order_by('-created_at')
+
+        serializer = ProjectInvitationSerializer(invitations, many=True, context={'request': request})
+        return Response(serializer.data, status=status.HTTP_200_OK)
+
+
+class ApproveProjectInvitationView(APIView):
+    """Approve a pending invitation and send the invite email."""
+
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, project_id, invitation_id):
+        project = get_object_or_404(Project, id=resolve_project_pk(project_id))
+
+        if not can_manage_project_members(request.user, project):
+            return Response(
+                {'error': 'Only privileged project roles can approve invitations'},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        invitation = get_object_or_404(ProjectInvitation, id=invitation_id, project=project)
+
+        if invitation.accepted:
+            return Response(
+                {'error': 'Invitation has already been accepted'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        if not invitation.approved:
+            # NOTE: the original mediaJira app enforced a purchased-seat cap
+            # here (atomically, via `stripe_meta.Subscription`), which is out
+            # of scope for this extracted project - see README "Known
+            # simplifications". No seat limit is enforced here.
+            invitation.approved = True
+            invitation.approved_by = request.user
+            invitation.approved_at = timezone.now()
+            invitation.save(update_fields=['approved', 'approved_by', 'approved_at'])
+            send_invitation_email(invitation)
+
+        serializer = ProjectInvitationSerializer(invitation, context={'request': request})
+        return Response(serializer.data, status=status.HTTP_200_OK)
+
+
+class RejectProjectInvitationView(APIView):
+    """Reject a pending invitation."""
+
+    permission_classes = [IsAuthenticated]
+
+    def delete(self, request, project_id, invitation_id):
+        project = get_object_or_404(Project, id=resolve_project_pk(project_id))
+
+        if not can_manage_project_members(request.user, project):
+            return Response(
+                {'error': 'Only privileged project roles can reject invitations'},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        invitation = get_object_or_404(ProjectInvitation, id=invitation_id, project=project)
+
+        if invitation.accepted:
+            return Response(
+                {'error': 'Invitation has already been accepted'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        invitation.delete()
+        return Response({'message': 'Invitation rejected'}, status=status.HTTP_200_OK)
