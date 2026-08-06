@@ -1,0 +1,48 @@
+import api from '../api';
+import {
+  ExperienceGroup,
+  ExperienceGroupListItem,
+  CreateExperienceGroupData,
+  UpdateExperienceGroupData,
+} from '@/types/experienceGroup';
+import type { RequestFormResponse, SubmitRequestResult, FormAnswers } from '@/types/ticketForm';
+
+const BASE = '/api/experience-groups';
+
+export const ExperienceGroupAPI = {
+  list: (params?: { project?: number }) =>
+    api.get<{ count: number; next: string | null; previous: string | null; results: ExperienceGroupListItem[] } | ExperienceGroupListItem[]>(`${BASE}/`, { params }),
+
+  retrieve: (id: number | string) =>
+    api.get<ExperienceGroup>(`${BASE}/${id}/`),
+
+  create: (data: CreateExperienceGroupData, projectId: number) =>
+    api.post<ExperienceGroup>(`${BASE}/`, data, { params: { project: projectId } }),
+
+  update: (id: number | string, data: UpdateExperienceGroupData) =>
+    api.patch<ExperienceGroup>(`${BASE}/${id}/`, data),
+
+  destroy: (id: number | string) =>
+    api.delete(`${BASE}/${id}/`),
+
+  publish: (id: number | string) =>
+    api.post<ExperienceGroup>(`${BASE}/${id}/publish/`),
+
+  preview: (id: number | string) =>
+    api.get<ExperienceGroup & { is_preview: boolean }>(`${BASE}/${id}/preview/`),
+
+  getRequestForm: (id: number | string) =>
+    api.get<RequestFormResponse>(`${BASE}/${id}/request-form/`),
+
+  submitRequest: (id: number | string, answers: FormAnswers, filesByField: Record<string, File[]>) => {
+    const formData = new FormData();
+    formData.append('answers', JSON.stringify(answers));
+    Object.entries(filesByField).forEach(([fieldKey, files]) => {
+      files.forEach((file) => formData.append(fieldKey, file));
+    });
+    return api.post<SubmitRequestResult>(`${BASE}/${id}/submit-request/`, formData, {
+      maxBodyLength: Infinity as number,
+      maxContentLength: Infinity as number,
+    });
+  },
+};
