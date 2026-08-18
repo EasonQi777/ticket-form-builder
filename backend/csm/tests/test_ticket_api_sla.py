@@ -268,3 +268,74 @@ class TestTicketPriorityOrdering:
         assert response.status_code == status.HTTP_200_OK
         titles = [t['title'] for t in _results(response)]
         assert titles[0] == 'Second'
+
+
+# ---------------------------------------------------------------------------
+# Pending Customer Response / SLA pause via PATCH (TM-016 / TM-017)
+# ---------------------------------------------------------------------------
+
+class TestTicketPendingCustomerResponseApi:
+    def test_status_can_transition_to_pending_customer_response(self, agent_client, ticket):
+        response = agent_client.patch(
+            _detail_url(ticket.id),
+            {'status': 'pending_customer_response'},
+            format='json',
+        )
+        assert response.status_code == status.HTTP_200_OK
+        assert response.data['status'] == 'pending_customer_response'
+
+    def test_transition_to_pending_pauses_sla_clock(
+        self, agent_client, ticket, full_sla_policy
+    ):
+        # Give the ticket SLA dues first.
+        agent_client.patch(_detail_url(ticket.id), {'priority': 'high'}, format='json')
+        ticket.refresh_from_db()
+        assert ticket.sla_paused_at is None
+
+        response = agent_client.patch(
+            _detail_url(ticket.id),
+            {'status': 'pending_customer_response'},
+            format='json',
+        )
+        assert response.status_code == status.HTTP_200_OK
+        assert response.data['sla']['is_paused'] is True
+        ticket.refresh_from_db()
+        assert ticket.sla_paused_at is not None
+
+    def test_leaving_pending_resumes_and_shifts_due_dates(
+        self, agent_client, ticket, full_sla_policy
+    ):
+        agent_client.patch(_detail_url(ticket.id), {'priority': 'high'}, format='json')
+        agent_client.patch(
+            _detail_url(ticket.id), {'status': 'pending_customer_response'}, format='json',
+        )
+        ticket.refresh_from_db()
+        due_before_resume = ticket.resolution_due
+        # Simulate time having passed while paused.
+        ticket.sla_paused_at = timezone.now() - timedelta(hours=3)
+        ticket.save(update_fields=['sla_paused_at'])
+
+        response = agent_client.patch(
+            _detail_url(ticket.id), {'status': 'in_progress'}, format='json',
+        )
+        assert response.status_code == status.HTTP_200_OK
+        assert response.data['sla']['is_paused'] is False
+        ticket.refresh_from_db()
+        assert ticket.sla_paused_at is None
+        assert ticket.resolution_due > due_before_resume
+
+    def test_close_action_clears_a_stale_pause(
+        self, agent_client, ticket, full_sla_policy
+    ):
+        agent_client.patch(_detail_url(ticket.id), {'priority': 'high'}, format='json')
+        agent_client.patch(
+            _detail_url(ticket.id), {'status': 'pending_customer_response'}, format='json',
+        )
+        ticket.refresh_from_db()
+        assert ticket.sla_paused_at is not None
+
+        response = agent_client.post(reverse('ticket-close', kwargs={'pk': ticket.id}))
+        assert response.status_code == status.HTTP_200_OK
+        ticket.refresh_from_db()
+        assert ticket.status == 'closed'
+        assert ticket.sla_paused_at is None

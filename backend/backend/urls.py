@@ -28,6 +28,7 @@ urlpatterns = [
     path('api/', include('experience_group.urls')),
     path('api/', include('customer.urls')),
     path('api/dashboard/', include('dashboard.urls')),
+    path('api/', include('calendars.urls')),
 ]
 
 if settings.DEBUG:

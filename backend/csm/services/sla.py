@@ -86,6 +86,38 @@ def _get_project_id(ticket):
         return None
 
 
+def pause_sla_clock(ticket):
+    """
+    Freeze the SLA countdown for a ticket (TM-016), e.g. when it moves into
+    'pending_customer_response'. Records the moment the pause started;
+    resume_sla_clock() later shifts the due dates forward by however long
+    the pause lasted.
+
+    No-op if the ticket has no due dates to pause, or is already paused.
+    """
+    if ticket.sla_paused_at is not None:
+        return
+    if ticket.first_response_due is None and ticket.resolution_due is None:
+        return
+    ticket.sla_paused_at = timezone.now()
+
+
+def resume_sla_clock(ticket):
+    """
+    Unfreeze a paused SLA countdown by shifting first_response_due /
+    resolution_due forward by the elapsed pause duration, then clearing
+    sla_paused_at. No-op if the ticket isn't currently paused.
+    """
+    if ticket.sla_paused_at is None:
+        return
+    elapsed = timezone.now() - ticket.sla_paused_at
+    if ticket.first_response_due is not None:
+        ticket.first_response_due = ticket.first_response_due + elapsed
+    if ticket.resolution_due is not None:
+        ticket.resolution_due = ticket.resolution_due + elapsed
+    ticket.sla_paused_at = None
+
+
 def get_sla_status(ticket):
     """
     Return a dict describing the current SLA status for a ticket.
@@ -97,8 +129,16 @@ def get_sla_status(ticket):
       resolution_breached     – bool
       first_response_remaining_seconds – int or None
       resolution_remaining_seconds     – int or None
+      is_paused            – bool, True while the ticket sits in an
+                              SLA-pausing status (e.g. pending_customer_response)
+      paused_at             – ISO datetime string or None
+
+    While paused, "now" is pinned to the moment the pause started so the
+    countdown/breach state reads as frozen rather than continuing to run out
+    against wall-clock time.
     """
-    now = timezone.now()
+    is_paused = ticket.sla_paused_at is not None
+    now = ticket.sla_paused_at if is_paused else timezone.now()
 
     def _remaining(due):
         if due is None:
@@ -116,4 +156,62 @@ def get_sla_status(ticket):
         ),
         'first_response_remaining_seconds': _remaining(ticket.first_response_due),
         'resolution_remaining_seconds': _remaining(ticket.resolution_due),
+        'is_paused': is_paused,
+        'paused_at': ticket.sla_paused_at.isoformat() if ticket.sla_paused_at else None,
     }
+
+
+def notify_sla_breach_if_needed(ticket):
+    """
+    Create an in-app CsmNotification (TM-015) the first time a ticket is
+    found breaching its first-response or resolution SLA target.
+
+    Idempotent: dedupes on (recipient, notification_type='sla_breach',
+    metadata.ticket_id, metadata.kind) so re-running this against the same
+    ticket doesn't spam duplicate notifications. Intended to be called from
+    the `check_sla_breaches` management command (there's no Celery/cron in
+    this project — see README "Known simplifications" — so breach detection
+    is a poll rather than push).
+
+    No-op for paused tickets (nothing is actively breaching while frozen),
+    tickets with no assignee to notify, or tickets in a terminal status.
+    """
+    from csm.models import CsmNotification
+
+    if ticket.status in ('resolved', 'closed'):
+        return []
+    if not ticket.assigned_to_id:
+        return []
+
+    status = get_sla_status(ticket)
+    if status['is_paused']:
+        return []
+
+    created = []
+    for kind, breached_key in (
+        ('first_response', 'first_response_breached'),
+        ('resolution', 'resolution_breached'),
+    ):
+        if not status[breached_key]:
+            continue
+
+        already_notified = CsmNotification.objects.filter(
+            recipient=ticket.assigned_to,
+            notification_type='sla_breach',
+            metadata__ticket_id=ticket.id,
+            metadata__kind=kind,
+        ).exists()
+        if already_notified:
+            continue
+
+        label = 'First response' if kind == 'first_response' else 'Resolution'
+        notification = CsmNotification.objects.create(
+            recipient=ticket.assigned_to,
+            notification_type='sla_breach',
+            title=f'SLA breached: {ticket.title}',
+            message=f'{label} SLA for ticket "{ticket.title}" has been breached.',
+            metadata={'ticket_id': ticket.id, 'kind': kind},
+        )
+        created.append(notification)
+
+    return created

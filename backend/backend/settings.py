@@ -54,6 +54,8 @@ INSTALLED_APPS = [
     'csm',
     'experience_group',
     'dashboard',
+    'activity',
+    'calendars.apps.CalendarConfig',
 ]
 
 MIDDLEWARE = [
@@ -240,6 +242,10 @@ REST_FRAMEWORK = {
         'rest_framework.parsers.FormParser',
         'rest_framework.parsers.MultiPartParser',
     ],
+    # Only normalizes responses from calendars.* views into the unified
+    # ErrorResponse shape (see calendars/exceptions.py); every other app's
+    # error format is untouched.
+    'EXCEPTION_HANDLER': 'calendars.exceptions.calendar_exception_handler',
 }
 
 SIMPLE_JWT = {

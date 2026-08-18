@@ -119,12 +119,13 @@ export interface UpdateCustomerUserData {
 
 // ── Ticket ──────────────────────────────────────────────────────────────────
 
-export type TicketStatus = 'todo' | 'in_progress' | 'resolved' | 'closed';
+export type TicketStatus = 'todo' | 'in_progress' | 'pending_customer_response' | 'resolved' | 'closed';
 export type TicketPriority = 'critical' | 'high' | 'medium' | 'low';
 
 export const STATUS_LABELS: Record<TicketStatus, string> = {
   todo: 'To Do',
   in_progress: 'In Progress',
+  pending_customer_response: 'Pending Customer Response',
   resolved: 'Resolved',
   closed: 'Closed',
 };
@@ -132,6 +133,7 @@ export const STATUS_LABELS: Record<TicketStatus, string> = {
 export const STATUS_COLORS: Record<TicketStatus, string> = {
   todo: 'bg-gray-100 text-gray-700',
   in_progress: 'bg-blue-50 text-blue-700',
+  pending_customer_response: 'bg-amber-50 text-amber-700',
   resolved: 'bg-green-50 text-green-700',
   closed: 'bg-gray-50 text-gray-500',
 };
@@ -159,6 +161,9 @@ export interface SlaStatus {
   resolution_breached: boolean;
   first_response_remaining_seconds: number | null;
   resolution_remaining_seconds: number | null;
+  /** True while the ticket sits in an SLA-pausing status (e.g. pending_customer_response). */
+  is_paused: boolean;
+  paused_at: string | null;
 }
 
 export interface SLAPriorityTarget {

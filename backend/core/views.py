@@ -13,6 +13,9 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
+from activity.models import ActivityLog
+from activity.services import log_activity
+
 from core.admin_utils import assign_org_admin
 from core.models import Organization, Project, ProjectInvitation, ProjectMember, Role
 from core.permissions import (
@@ -348,6 +351,18 @@ class ProjectViewSet(SlugLookupViewSetMixin, viewsets.ModelViewSet):
         ensure_project_calendar(project)
 
         return project
+
+    def perform_update(self, serializer):
+        project = serializer.save()
+        log_activity(
+            project_id=project.id,
+            actor=self.request.user,
+            verb='project.updated',
+            summary='Project settings changed',
+            status=ActivityLog.Status.INFO,
+            target_type='project',
+            target_id=project.id,
+        )
 
     @staticmethod
     def _auto_create_organization(user):
