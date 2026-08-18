@@ -8,7 +8,6 @@ import { useActiveProjectForFlatRoute } from '@/lib/useActiveProjectForFlatRoute
 import { ProtectedRoute } from '@/components/auth/ProtectedRoute';
 import DashboardLayout from '@/components/dashboard/DashboardLayout';
 import LoadingSpinner from '@/components/ui/LoadingSpinner';
-import Modal from '@/components/ui/Modal';
 import { TicketFormAPI } from '@/lib/api/ticketFormApi';
 import type { TicketFormListItem } from '@/types/ticketForm';
 import { PORTAL_SUBMIT_BUTTON_CLASS } from '@/components/ticket-form/constants';
@@ -22,8 +21,6 @@ export default function TicketFormsListPage() {
   const [forms, setForms] = useState<TicketFormListItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [createOpen, setCreateOpen] = useState(false);
-  const [name, setName] = useState('');
   const [creating, setCreating] = useState(false);
 
   const load = useCallback(async () => {
@@ -41,18 +38,15 @@ export default function TicketFormsListPage() {
 
   useEffect(() => { load(); }, [load]);
 
-  const handleCreate = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!name.trim() || creating) return;
+  const handleCreate = async () => {
+    if (creating) return;
     setCreating(true);
+    setError(null);
     try {
-      const res = await TicketFormAPI.create(projectId, { name: name.trim() });
-      setCreateOpen(false);
-      setName('');
+      const res = await TicketFormAPI.create(projectId, { name: 'Untitled form' });
       router.push(`/admin/ticket-forms/${res.data.slug}/edit`);
     } catch {
       setError('Could not create form.');
-    } finally {
       setCreating(false);
     }
   };
@@ -77,10 +71,11 @@ export default function TicketFormsListPage() {
                 </Link>
                 <button
                   type="button"
-                  onClick={() => setCreateOpen(true)}
-                  className={`gap-2 ${PORTAL_SUBMIT_BUTTON_CLASS}`}
+                  onClick={handleCreate}
+                  disabled={creating}
+                  className={`gap-2 disabled:cursor-wait disabled:opacity-60 ${PORTAL_SUBMIT_BUTTON_CLASS}`}
                 >
-                  <Plus className="h-4 w-4" /> New form
+                  <Plus className="h-4 w-4" /> {creating ? 'Creating…' : 'New form'}
                 </button>
               </div>
             )}
@@ -141,31 +136,6 @@ export default function TicketFormsListPage() {
             </div>
           )}
         </div>
-
-        <Modal isOpen={createOpen} onClose={() => setCreateOpen(false)}>
-          <div className="w-full max-w-lg rounded-xl bg-white shadow-xl">
-            <div className="border-b border-gray-200 px-6 py-4">
-              <h2 className="text-lg font-semibold text-gray-900">New ticket form</h2>
-            </div>
-            <form onSubmit={handleCreate} className="flex flex-col gap-4 p-6">
-              <input
-                value={name}
-                onChange={(e) => setName(e.target.value)}
-                placeholder="Form name"
-                className="rounded-lg border border-gray-300 px-3 py-2 text-sm"
-                required
-              />
-              <div className="flex justify-end gap-2">
-                <button type="button" onClick={() => setCreateOpen(false)} className="rounded-lg border px-4 py-2 text-sm">
-                  Cancel
-                </button>
-                <button type="submit" disabled={creating} className="rounded-lg bg-indigo-600 px-4 py-2 text-sm text-white">
-                  {creating ? 'Creating...' : 'Create'}
-                </button>
-              </div>
-            </form>
-          </div>
-        </Modal>
       </DashboardLayout>
     </ProtectedRoute>
   );

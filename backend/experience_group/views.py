@@ -10,6 +10,9 @@ from core.permissions import IsProjectMember
 from core.viewset_mixins import ProjectScopedViewSetMixin
 from core.slug_mixins import SlugLookupViewSetMixin
 
+from activity.models import ActivityLog
+from activity.services import log_activity
+
 from csm.models import TicketForm
 from csm.serializers import TicketFormFieldSerializer
 from csm.services import (
@@ -50,9 +53,29 @@ class ExperienceGroupViewSet(SlugLookupViewSetMixin, ProjectScopedViewSetMixin, 
 
     def perform_create(self, serializer):
         project_id = self.get_required_project_id()
-        serializer.save(
+        group = serializer.save(
             created_by=self.request.user,
             project_id=project_id,
+        )
+        log_activity(
+            project_id=project_id,
+            actor=self.request.user,
+            verb='experience_group.created',
+            summary='Experience group created',
+            status=ActivityLog.Status.SUCCESS,
+            target_type='experience_group',
+            target_id=group.id,
+        )
+
+    def _log_updated(self, instance):
+        log_activity(
+            project_id=instance.project_id,
+            actor=self.request.user,
+            verb='experience_group.updated',
+            summary='Experience group updated',
+            status=ActivityLog.Status.INFO,
+            target_type='experience_group',
+            target_id=instance.id,
         )
 
     def update(self, request, *args, **kwargs):
@@ -67,6 +90,7 @@ class ExperienceGroupViewSet(SlugLookupViewSetMixin, ProjectScopedViewSetMixin, 
             instance.revert_to_draft()
             instance.draft_snapshot = snapshot
             instance.save()
+            self._log_updated(instance)
             serializer = self.get_serializer(instance)
             return Response(serializer.data)
 
@@ -75,6 +99,7 @@ class ExperienceGroupViewSet(SlugLookupViewSetMixin, ProjectScopedViewSetMixin, 
         serializer = self.get_serializer(instance, data=request.data, partial=partial)
         serializer.is_valid(raise_exception=True)
         self.perform_update(serializer)
+        self._log_updated(instance)
 
         if getattr(instance, '_prefetched_objects_cache', None):
             instance._prefetched_objects_cache = {}
@@ -119,6 +144,15 @@ class ExperienceGroupViewSet(SlugLookupViewSetMixin, ProjectScopedViewSetMixin, 
             )
 
         instance.save()
+        log_activity(
+            project_id=instance.project_id,
+            actor=request.user,
+            verb='experience_group.published',
+            summary='Experience group published',
+            status=ActivityLog.Status.SUCCESS,
+            target_type='experience_group',
+            target_id=instance.id,
+        )
         serializer = self.get_serializer(instance)
         return Response(serializer.data)
 

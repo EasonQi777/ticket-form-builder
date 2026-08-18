@@ -125,6 +125,7 @@ class CustomerUser(TimeStampedModel):
 class CsmNotification(TimeStampedModel):
     NOTIFICATION_TYPES = [
         ('org_invitation', 'Organisation Invitation'),
+        ('sla_breach', 'SLA Breach'),
     ]
     ACTION_STATUS_CHOICES = [
         ('pending', 'Pending'),
@@ -164,9 +165,14 @@ class Ticket(TimeStampedModel):
     STATUS_CHOICES = [
         ('todo', 'To Do'),
         ('in_progress', 'In Progress'),
+        ('pending_customer_response', 'Pending Customer Response'),
         ('resolved', 'Resolved'),
         ('closed', 'Closed'),
     ]
+    # Statuses that pause the SLA clock while a ticket sits in them — the
+    # ticket is waiting on the customer, not on the agent, so time spent here
+    # shouldn't count against first-response/resolution targets (TM-016).
+    SLA_PAUSING_STATUSES = {'pending_customer_response'}
     PRIORITY_CHOICES = [
         ('critical', 'Critical'),
         ('high', 'High'),
@@ -178,7 +184,7 @@ class Ticket(TimeStampedModel):
     queue = models.ForeignKey(Queue, on_delete=models.CASCADE, related_name='tickets')
     title = models.CharField(max_length=300)
     description = models.TextField(blank=True)
-    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='todo')
+    status = models.CharField(max_length=30, choices=STATUS_CHOICES, default='todo')
     priority = models.CharField(max_length=10, choices=PRIORITY_CHOICES, default='medium')
     assigned_to = models.ForeignKey(
         settings.AUTH_USER_MODEL, on_delete=models.SET_NULL,
@@ -193,6 +199,11 @@ class Ticket(TimeStampedModel):
     )
     first_response_due = models.DateTimeField(null=True, blank=True)
     resolution_due = models.DateTimeField(null=True, blank=True)
+    # Set while status is in SLA_PAUSING_STATUSES (e.g. pending_customer_response).
+    # csm.services.sla.pause_sla_clock()/resume_sla_clock() manage this field;
+    # resuming shifts first_response_due/resolution_due forward by the paused
+    # duration so the countdown effectively freezes while waiting on the customer.
+    sla_paused_at = models.DateTimeField(null=True, blank=True)
 
     # --- CSM-S01-07: form submission context ---
     form = models.ForeignKey(

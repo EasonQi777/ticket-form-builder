@@ -19,6 +19,9 @@ from core.permissions import IsProjectMember
 from core.viewset_mixins import ProjectScopedViewSetMixin
 from core.slug_mixins import SlugLookupViewSetMixin
 
+from activity.models import ActivityLog
+from activity.services import log_activity
+
 from .models import (
     Queue, QueueAgent, QueueTeam, CustomerUser, Ticket, CsmNotification,
     Conversation, ConversationMessage, QuickReplyTemplate, QuickReplyTemplateHistory,
@@ -817,15 +820,19 @@ class TicketViewSet(viewsets.ModelViewSet):
         return Response(TicketSerializer(ticket).data)
 
     def partial_update(self, request, *args, **kwargs):
-        """Override PATCH to sync SLA on priority change and broadcast status changes."""
-        from csm.services.sla import recalculate_ticket_sla
+        """Override PATCH to sync SLA on priority/status change and broadcast status changes."""
+        from csm.services.sla import recalculate_ticket_sla, pause_sla_clock, resume_sla_clock
         ticket = self.get_object()
         old_status = ticket.status
         old_priority = ticket.priority
         new_status = request.data.get('status')
         new_priority = request.data.get('priority')
 
-        response = super().partial_update(request, *args, **kwargs)
+        super().partial_update(request, *args, **kwargs)
+        # super().partial_update() re-fetches its own instance internally, so
+        # our local `ticket` is stale after it saves — refresh before reading
+        # or writing anything below (status, priority, assigned_to, etc.).
+        ticket.refresh_from_db()
 
         # Conversation sync on status change
         if new_status and old_status != new_status and ticket.conversation_id:
@@ -841,23 +848,35 @@ class TicketViewSet(viewsets.ModelViewSet):
                 )
                 Conversation.objects.filter(id=ticket.conversation_id).update(status='resolved')
 
+        # Pause/resume the SLA clock (TM-016) when the status moves into or
+        # out of an SLA-pausing status (e.g. pending_customer_response).
+        if new_status and old_status != new_status:
+            was_paused = old_status in Ticket.SLA_PAUSING_STATUSES
+            is_paused = new_status in Ticket.SLA_PAUSING_STATUSES
+            if is_paused and not was_paused:
+                pause_sla_clock(ticket)
+                ticket.save(update_fields=['sla_paused_at'])
+            elif was_paused and not is_paused:
+                resume_sla_clock(ticket)
+                ticket.save(update_fields=['first_response_due', 'resolution_due', 'sla_paused_at'])
+
         # Recalculate SLA when priority changes, using now() so the countdown
         # restarts from the moment of the change rather than ticket creation.
         if new_priority and old_priority != new_priority:
             from django.utils import timezone as tz
-            ticket.refresh_from_db()
             recalculate_ticket_sla(ticket, base_time=tz.now())
             ticket.save(update_fields=['first_response_due', 'resolution_due'])
-            return Response(TicketSerializer(ticket).data)
 
-        return response
+        return Response(TicketSerializer(ticket).data)
 
     @action(detail=True, methods=['post'])
     def close(self, request, pk=None):
         """Close a ticket."""
+        from csm.services.sla import resume_sla_clock
         ticket = self.get_object()
+        resume_sla_clock(ticket)  # no-op if not paused; clears a stale pause otherwise
         ticket.status = 'closed'
-        ticket.save(update_fields=['status'])
+        ticket.save(update_fields=['status', 'first_response_due', 'resolution_due', 'sla_paused_at'])
 
         # If linked to a conversation, post a system message and sync status
         if ticket.conversation_id:
@@ -921,6 +940,27 @@ class TicketFormViewSet(SlugLookupViewSetMixin, ProjectScopedViewSetMixin, views
             created_by=self.request.user,
         )
         ensure_system_fields(form)
+        log_activity(
+            project_id=project_id,
+            actor=self.request.user,
+            verb='ticket_form.created',
+            summary='New ticket form created',
+            status=ActivityLog.Status.SUCCESS,
+            target_type='ticket_form',
+            target_id=form.id,
+        )
+
+    def perform_update(self, serializer):
+        form = serializer.save()
+        log_activity(
+            project_id=form.project_id,
+            actor=self.request.user,
+            verb='ticket_form.updated',
+            summary=f'{form.name} form updated',
+            status=ActivityLog.Status.INFO,
+            target_type='ticket_form',
+            target_id=form.id,
+        )
 
     def perform_destroy(self, instance):
         assert_can_delete_form(instance)

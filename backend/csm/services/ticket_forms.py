@@ -7,6 +7,9 @@ from django.db import transaction
 
 from experience_group.models import ExperienceGroup
 
+from activity.models import ActivityLog
+from activity.services import log_activity
+
 from csm.models import (
     Ticket, TicketForm, TicketFormField, TicketFormAssignment,
     TicketFormSubmission, TicketAttachment, SupportProject,
@@ -269,5 +272,15 @@ def create_ticket_from_submission(
             )
             attachment.file = upload
             attachment.save()
+
+    log_activity(
+        project_id=experience_group.project_id,
+        actor=submitted_by,
+        verb='ticket.submitted',
+        summary='Support ticket submitted',
+        status=ActivityLog.Status.PENDING,
+        target_type='ticket',
+        target_id=ticket.id,
+    )
 
     return ticket, submission

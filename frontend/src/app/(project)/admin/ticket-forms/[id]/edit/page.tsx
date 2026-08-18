@@ -133,8 +133,6 @@ export default function TicketFormEditPage() {
   };
 
   const deleteForm = async () => {
-    if (!window.confirm('Delete this form? This cannot be undone.')) return;
-
     try {
       await TicketFormAPI.delete(formId);
       toast.success('Form deleted.');
