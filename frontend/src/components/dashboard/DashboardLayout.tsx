@@ -3,8 +3,38 @@
 import { useEffect, useRef, useState } from 'react';
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
-import { ChevronLeft, ChevronRight, LayoutDashboard, LogOut, Settings, Ticket, User } from 'lucide-react';
+import { ChevronLeft, ChevronRight, LogOut, Settings, User } from 'lucide-react';
 import useAuth from '@/hooks/useAuth';
+
+function IconDashboard({ active }: { active: boolean }) {
+  const fill = active ? 'url(#sidebar-dashboard-g1)' : '#637489';
+  return (
+    <svg width="18" height="18" viewBox="0 0 18 18" fill="none" aria-hidden="true" className="shrink-0">
+      <rect x="1" y="1" width="7" height="7" rx="1.5" fill={fill} />
+      <rect x="10" y="1" width="7" height="7" rx="1.5" fill={fill} />
+      <rect x="1" y="10" width="7" height="7" rx="1.5" fill={fill} />
+      <rect x="10" y="10" width="7" height="7" rx="1.5" fill={fill} />
+      <defs>
+        <linearGradient id="sidebar-dashboard-g1" x1="1" y1="1" x2="17" y2="17" gradientUnits="userSpaceOnUse">
+          <stop stopColor="#00c9a7" />
+          <stop offset="1" stopColor="#7ecb5f" />
+        </linearGradient>
+      </defs>
+    </svg>
+  );
+}
+
+function IconTicketForm({ active }: { active: boolean }) {
+  const stroke = active ? '#00c9a7' : '#637489';
+  return (
+    <svg width="18" height="18" viewBox="0 0 18 18" fill="none" aria-hidden="true" className="shrink-0">
+      <rect x="2" y="1" width="14" height="16" rx="2" stroke={stroke} strokeWidth="1.5" fill="none" />
+      <line x1="5" y1="5.5" x2="13" y2="5.5" stroke={stroke} strokeWidth="1.5" strokeLinecap="round" />
+      <line x1="5" y1="8.5" x2="13" y2="8.5" stroke={stroke} strokeWidth="1.5" strokeLinecap="round" />
+      <line x1="5" y1="11.5" x2="9" y2="11.5" stroke={stroke} strokeWidth="1.5" strokeLinecap="round" />
+    </svg>
+  );
+}
 
 /**
  * Trimmed-down replacement for mediaJira's DashboardLayout.
@@ -30,8 +60,8 @@ interface DashboardLayoutProps {
 }
 
 const NAV_ITEMS = [
-  { href: '/dashboard', label: 'Dashboard', icon: LayoutDashboard },
-  { href: '/admin/ticket-forms', label: 'Ticket Form Builder', icon: Ticket },
+  { href: '/dashboard', label: 'Dashboard' },
+  { href: '/admin/ticket-forms', label: 'Ticket Form Builder' },
 ];
 
 const HEADER_ICON_BUTTON_CLASS =
@@ -42,6 +72,9 @@ export default function DashboardLayout({
   mainClassName = '',
 }: DashboardLayoutProps) {
   const pathname = usePathname();
+  const flushMain =
+    !!pathname?.startsWith('/admin/csm/settings') ||
+    /^\/admin\/ticket-forms\/[^/]+\/assignments\/?$/.test(pathname ?? '');
   const { user, logout } = useAuth();
   const [userMenuOpen, setUserMenuOpen] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(true);
@@ -70,7 +103,7 @@ export default function DashboardLayout({
   return (
     <div className="flex h-screen w-full flex-col overflow-hidden bg-[#ECF3EF]">
       <header className="flex h-16 shrink-0 items-center justify-between bg-[#ECF3EF] px-6">
-        <span className="truncate text-2xl font-bold text-gray-900">Ticket Form Builder</span>
+        <span className="truncate text-[15px] font-bold tracking-tight text-[#1e2d40]">Ticket Form Builder</span>
         <div className="flex items-center gap-3">
           <Link
             href="/admin/csm/settings"
@@ -133,7 +166,7 @@ export default function DashboardLayout({
           }`}
           aria-hidden={!sidebarOpen}
         >
-          {NAV_ITEMS.map(({ href, label, icon: Icon }) => {
+          {NAV_ITEMS.map(({ href, label }) => {
             const active = pathname === href || !!pathname?.startsWith(`${href}/`);
             return (
               <Link
@@ -148,7 +181,11 @@ export default function DashboardLayout({
                     : 'text-gray-600 hover:bg-white/60 hover:text-gray-900'
                 }`}
               >
-                <Icon className="h-4 w-4 shrink-0" aria-hidden="true" />
+                {href === '/dashboard' ? (
+                  <IconDashboard active={active} />
+                ) : (
+                  <IconTicketForm active={active} />
+                )}
                 {label}
               </Link>
             );
@@ -176,7 +213,9 @@ export default function DashboardLayout({
             )}
           </button>
           <main
-            className={`min-h-0 flex-1 overflow-y-auto overflow-x-hidden p-3 space-y-4 sm:p-5 ${mainClassName}`}
+            className={`min-h-0 flex-1 overflow-y-auto overflow-x-hidden ${
+              flushMain ? '' : 'p-3 space-y-4 sm:p-5'
+            } ${mainClassName}`}
           >
             {children}
           </main>

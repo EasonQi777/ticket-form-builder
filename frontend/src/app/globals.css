@@ -673,6 +673,10 @@ input[type="password"]::-webkit-contacts-auto-fill-button {
   background: linear-gradient(135deg, #3cced7, #a6e661);
 }
 
+.brand-gradient-bg {
+  background: linear-gradient(135deg, #00c9a7 0%, #7ecb5f 100%);
+}
+
 /* Glow hover for CTAs */
 .glow-indigo {
   transition: box-shadow 0.3s ease;

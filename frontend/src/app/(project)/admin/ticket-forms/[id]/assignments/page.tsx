@@ -5,8 +5,6 @@ import Link from 'next/link';
 import { useParams } from 'next/navigation';
 import { ArrowLeft, Users } from 'lucide-react';
 import { useActiveProjectForFlatRoute } from '@/lib/useActiveProjectForFlatRoute';
-import { ProtectedRoute } from '@/components/auth/ProtectedRoute';
-import DashboardLayout from '@/components/dashboard/DashboardLayout';
 import LoadingSpinner from '@/components/ui/LoadingSpinner';
 import AssignmentPanel from '@/components/ticket-form/AssignmentPanel';
 import { TicketFormAPI } from '@/lib/api/ticketFormApi';
@@ -37,8 +35,6 @@ export default function TicketFormAssignmentsPage() {
   useEffect(() => { load(); }, [load]);
 
   return (
-    <ProtectedRoute requiredAuth={true} fallback="/unauthorized">
-      <DashboardLayout alerts={[]} upcomingMeetings={[]} mainClassName="!p-0 !space-y-0">
         <div className="flex min-h-full flex-1 flex-col gap-6 bg-white p-8 max-sm:p-4">
           <div className="flex flex-wrap items-center justify-between gap-3">
             <div>
@@ -82,7 +78,5 @@ export default function TicketFormAssignmentsPage() {
             />
           )}
         </div>
-      </DashboardLayout>
-    </ProtectedRoute>
   );
 }

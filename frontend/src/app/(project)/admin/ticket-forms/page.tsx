@@ -5,8 +5,6 @@ import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { Plus, Pencil, Link2, AlertCircle, Settings } from 'lucide-react';
 import { useActiveProjectForFlatRoute } from '@/lib/useActiveProjectForFlatRoute';
-import { ProtectedRoute } from '@/components/auth/ProtectedRoute';
-import DashboardLayout from '@/components/dashboard/DashboardLayout';
 import LoadingSpinner from '@/components/ui/LoadingSpinner';
 import { TicketFormAPI } from '@/lib/api/ticketFormApi';
 import type { TicketFormListItem } from '@/types/ticketForm';
@@ -52,8 +50,6 @@ export default function TicketFormsListPage() {
   };
 
   return (
-    <ProtectedRoute requiredAuth={true} fallback="/unauthorized">
-      <DashboardLayout alerts={[]} upcomingMeetings={[]}>
         <div className="flex flex-col gap-6 p-8">
           <div className="flex items-center justify-between">
             <div>
@@ -136,7 +132,5 @@ export default function TicketFormsListPage() {
             </div>
           )}
         </div>
-      </DashboardLayout>
-    </ProtectedRoute>
   );
 }

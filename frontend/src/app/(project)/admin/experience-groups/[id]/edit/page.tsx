@@ -3,8 +3,6 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import { useProjectStore } from '@/lib/projectStore';
-import { ProtectedRoute } from '@/components/auth/ProtectedRoute';
-import DashboardLayout from '@/components/dashboard/DashboardLayout';
 import LoadingSpinner from '@/components/ui/LoadingSpinner';
 import { ExperienceGroupAPI } from '@/lib/api/experienceGroupApi';
 import { ExperienceGroup } from '@/types/experienceGroup';
@@ -114,41 +112,31 @@ const EditExperienceGroupPage: React.FC = () => {
 
   if (loading) {
     return (
-      <ProtectedRoute requiredAuth={true} fallback="/unauthorized">
-        <DashboardLayout alerts={[]} upcomingMeetings={[]}>
-          <div className="flex flex-col items-center justify-center min-h-[400px] gap-3">
-            <LoadingSpinner />
-            <p className="text-sm text-gray-500">Loading...</p>
-          </div>
-        </DashboardLayout>
-      </ProtectedRoute>
+      <div className="flex flex-col items-center justify-center min-h-[400px] gap-3">
+        <LoadingSpinner />
+        <p className="text-sm text-gray-500">Loading...</p>
+      </div>
     );
   }
 
   if (fetchError || !group) {
     return (
-      <ProtectedRoute requiredAuth={true} fallback="/unauthorized">
-        <DashboardLayout alerts={[]} upcomingMeetings={[]}>
-          <div className="p-8">
-            <div className="flex items-center gap-3 p-4 bg-red-50 border border-red-200 rounded-lg">
-              <AlertCircle className="h-5 w-5 text-red-600 shrink-0" />
-              <p className="text-sm text-red-700">{fetchError || 'Group not found.'}</p>
-              <button
-                onClick={fetchGroup}
-                className="ml-auto px-3 py-1.5 text-sm text-red-700 border border-red-300 rounded-lg hover:bg-red-100"
-              >
-                Retry
-              </button>
-            </div>
-          </div>
-        </DashboardLayout>
-      </ProtectedRoute>
+      <div className="p-8">
+        <div className="flex items-center gap-3 p-4 bg-red-50 border border-red-200 rounded-lg">
+          <AlertCircle className="h-5 w-5 text-red-600 shrink-0" />
+          <p className="text-sm text-red-700">{fetchError || 'Group not found.'}</p>
+          <button
+            onClick={fetchGroup}
+            className="ml-auto px-3 py-1.5 text-sm text-red-700 border border-red-300 rounded-lg hover:bg-red-100"
+          >
+            Retry
+          </button>
+        </div>
+      </div>
     );
   }
 
   return (
-    <ProtectedRoute requiredAuth={true} fallback="/unauthorized">
-      <DashboardLayout alerts={[]} upcomingMeetings={[]}>
         <div className="p-8 max-w-2xl">
 
           {/* Back + title */}
@@ -259,8 +247,6 @@ const EditExperienceGroupPage: React.FC = () => {
             )}
           </div>
         </div>
-      </DashboardLayout>
-    </ProtectedRoute>
   );
 };
 

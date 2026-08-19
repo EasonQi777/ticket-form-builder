@@ -8,7 +8,6 @@ import { Input } from '@/components/ui/input';
 import ProjectCard from '@/components/select-project/ProjectCard';
 import CreateProjectCard from '@/components/select-project/CreateProjectCard';
 import QuickCreateProjectModal from '@/components/select-project/QuickCreateProjectModal';
-import DashboardLayout from '@/components/dashboard/DashboardLayout';
 import Modal from '@/components/ui/Modal';
 import { useProjects } from '@/hooks/useProjects';
 import { useProjectStore } from '@/lib/projectStore';
@@ -236,7 +235,7 @@ export default function SelectProjectPage() {
   };
 
   return (
-    <DashboardLayout alerts={[]} upcomingMeetings={[]}>
+    <>
       <div className="max-w-[1200px] mx-auto w-full">
         <div className="mb-6">
           <h1 className="text-2xl font-semibold text-gray-900 mb-1">
@@ -345,6 +344,6 @@ export default function SelectProjectPage() {
           </div>
         </Modal>
       )}
-    </DashboardLayout>
+    </>
   );
 }
