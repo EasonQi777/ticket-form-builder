@@ -65,7 +65,7 @@ const NAV_ITEMS = [
 ];
 
 const HEADER_ICON_BUTTON_CLASS =
-  'flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-white text-gray-600 shadow-sm transition hover:text-gray-900 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white';
+  'flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-[#ECF3EF] text-gray-600 transition hover:bg-[#f4f7f9] hover:text-gray-900 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#e2eaf0]';
 
 export default function DashboardLayout({
   children,
@@ -117,7 +117,7 @@ export default function DashboardLayout({
           <div className="relative" ref={userMenuRef}>
             <button
               type="button"
-              className={HEADER_ICON_BUTTON_CLASS}
+              className={`${HEADER_ICON_BUTTON_CLASS} border border-[#C1C8CFFF]`}
               title="Account"
               aria-label="Account"
               aria-expanded={userMenuOpen}
