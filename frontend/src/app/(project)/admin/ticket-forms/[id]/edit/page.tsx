@@ -7,11 +7,6 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 
 import { useActiveProjectForFlatRoute } from '@/lib/useActiveProjectForFlatRoute';
-
-import { ProtectedRoute } from '@/components/auth/ProtectedRoute';
-
-import DashboardLayout from '@/components/dashboard/DashboardLayout';
-
 import LoadingSpinner from '@/components/ui/LoadingSpinner';
 
 import TicketFormBuilder from '@/components/ticket-form/TicketFormBuilder';
@@ -142,53 +137,23 @@ export default function TicketFormEditPage() {
     }
   };
 
-  return (
-
-    <ProtectedRoute requiredAuth={true} fallback="/unauthorized">
-
-      <DashboardLayout alerts={[]} upcomingMeetings={[]}>
-
-          {loading || !form ? (
-
-            <div className="flex items-center justify-center py-24">
-
-              <LoadingSpinner />
-
-            </div>
-
-          ) : (
-
-            <TicketFormBuilder
-
-              formId={formId}
-
-              projectId={projectId}
-
-              formName={name}
-
-              formDescription={description}
-
-              onFormNameChange={setName}
-
-              onFormDescriptionChange={setDescription}
-
-              onSaveMetadata={saveMetadata}
-
-              onDeleteForm={deleteForm}
-
-              initialFields={form.fields}
-
-              onSaved={load}
-
-            />
-
-          )}
-
-      </DashboardLayout>
-
-    </ProtectedRoute>
-
+  return loading || !form ? (
+    <div className="flex items-center justify-center py-24">
+      <LoadingSpinner />
+    </div>
+  ) : (
+    <TicketFormBuilder
+      formId={formId}
+      projectId={projectId}
+      formName={name}
+      formDescription={description}
+      onFormNameChange={setName}
+      onFormDescriptionChange={setDescription}
+      onSaveMetadata={saveMetadata}
+      onDeleteForm={deleteForm}
+      initialFields={form.fields}
+      onSaved={load}
+    />
   );
-
 }
 

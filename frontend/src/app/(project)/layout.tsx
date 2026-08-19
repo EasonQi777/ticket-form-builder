@@ -1,14 +1,25 @@
+'use client';
+
+import { usePathname } from 'next/navigation';
+import { ProtectedRoute } from '@/components/auth/ProtectedRoute';
+import DashboardLayout from '@/components/dashboard/DashboardLayout';
+
 /**
- * Trimmed-down replacement for mediaJira's (project) layout.
- *
- * The original wrapped every page in a `DashboardPanelPreferenceProvider`
- * tied to the upcoming-meetings side panel, which isn't part of this
- * extracted project (see README "Known simplifications" and the rewritten
- * `DashboardLayout` in src/components/dashboard/DashboardLayout.tsx). Pages
- * under this route group handle their own auth guarding (see
- * `components/auth/ProtectedRoute`) and project scoping (`lib/projectStore`),
- * so no additional context is needed here.
+ * Shared app chrome for project routes so the header and sidebar stay mounted
+ * when moving between Dashboard, Ticket Form Builder, and other admin pages.
+ * Portal preview is a full-page shell and skips this chrome.
  */
 export default function ProjectLayout({ children }: { children: React.ReactNode }) {
-  return <>{children}</>;
+  const pathname = usePathname();
+  const isPreview = pathname?.includes('/preview');
+
+  if (isPreview) {
+    return <>{children}</>;
+  }
+
+  return (
+    <ProtectedRoute requiredAuth fallback="/unauthorized">
+      <DashboardLayout>{children}</DashboardLayout>
+    </ProtectedRoute>
+  );
 }

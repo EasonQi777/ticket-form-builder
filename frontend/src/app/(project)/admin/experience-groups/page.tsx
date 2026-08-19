@@ -1,8 +1,6 @@
 'use client';
 
 import React, { useState, useEffect, useCallback } from 'react';
-import { ProtectedRoute } from '@/components/auth/ProtectedRoute';
-import DashboardLayout from '@/components/dashboard/DashboardLayout';
 import LoadingSpinner from '@/components/ui/LoadingSpinner';
 import Modal from '@/components/ui/Modal';
 import { ExperienceGroupAPI } from '@/lib/api/experienceGroupApi';
@@ -432,8 +430,7 @@ const ExperienceGroupsPage: React.FC = () => {
   };
 
   return (
-    <ProtectedRoute requiredAuth={true} fallback="/unauthorized">
-      <DashboardLayout alerts={[]} upcomingMeetings={[]}>
+    <>
         <div className="p-8 flex flex-col gap-6">
 
           {/* Header */}
@@ -656,8 +653,7 @@ const ExperienceGroupsPage: React.FC = () => {
             )}
           </div>
         </Modal>
-      </DashboardLayout>
-    </ProtectedRoute>
+    </>
   );
 };
 

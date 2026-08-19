@@ -8,23 +8,23 @@ import type { ActivityItem, ActivityStatus } from '@/types/activity';
 /**
  * Recent Activity panel — wired to GET /api/dashboard/activity/.
  *
- * Visual spec: RECENT_ACTIVITY_FEATURE_DESIGN.md §2, extracted from
- * design_dashboard/src/App.tsx:368-404 (colors, type scale, row anatomy).
+ * Visual spec: DASHBOARD_UI_ELEMENTS.md §2.7.
  * Data contract: RECENT_ACTIVITY_FEATURE_DESIGN.md §6.
  */
 
 const STATUS_STYLES: Record<ActivityStatus, { bg: string; text: string; label: string }> = {
-  success: { bg: '#f0fdfa', text: '#0d9488', label: 'Created' },
+  success: {
+    bg: 'linear-gradient(135deg, #e8faf6 0%, #f0faf0 100%)',
+    text: '#00a887',
+    label: 'Created',
+  },
   pending: { bg: '#fffbeb', text: '#d97706', label: 'Pending' },
   info: { bg: '#eff6ff', text: '#3b82f6', label: 'Updated' },
 };
 
-// DM Sans / Inter, scoped to just this panel (not the app's global font) —
-// see RECENT_ACTIVITY_FEATURE_DESIGN.md §3 "Font note".
-const HEADING_FONT = "'DM Sans', sans-serif";
-const BODY_FONT = "'Inter', sans-serif";
-
-const ROW_LIMIT = 4;
+const HEADING_FONT = "'Outfit', sans-serif";
+const ROW_LIMIT = 3;
+const CARD_SHADOW = '0 1px 4px rgba(30, 45, 64, 0.05)';
 
 function relativeTime(isoTimestamp: string): string {
   try {
@@ -32,6 +32,11 @@ function relativeTime(isoTimestamp: string): string {
   } catch {
     return '';
   }
+}
+
+function metaLine(item: ActivityItem): string {
+  const time = relativeTime(item.created_at);
+  return item.actor_name ? `by ${item.actor_name} · ${time}` : time;
 }
 
 export default function RecentActivityPanel() {
@@ -58,77 +63,71 @@ export default function RecentActivityPanel() {
   }, []);
 
   return (
-    <div>
-      {/* Self-contained font import, scoped to this component only. */}
-      <style>{`@import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@600;700&family=Inter:wght@400;500;600&display=swap');`}</style>
+    <div
+      className="flex h-full flex-col overflow-hidden rounded-xl border border-[#e2eaf0] bg-white"
+      style={{ boxShadow: CARD_SHADOW }}
+    >
+      <div className="brand-gradient-bg h-1.5 shrink-0" />
+      <div className="flex flex-1 flex-col p-6">
+        <h2
+          className="mb-4 text-[15px] font-semibold text-[#1e2d40]"
+          style={{ fontFamily: HEADING_FONT }}
+        >
+          Recent Activity
+        </h2>
 
-      <h2 className="mb-3.5 text-[15px] font-semibold text-[#0f2623]" style={{ fontFamily: HEADING_FONT }}>
-        Recent Activity
-      </h2>
-
-      <div className="overflow-hidden rounded-xl border border-[#e8f0ee] bg-white shadow-[0_1px_3px_rgba(0,0,0,0.04)]">
         {loading ? (
-          <div className="space-y-3 px-4 py-4" aria-hidden="true">
-            {[0, 1, 2, 3].map((i) => (
-              <div key={i} className="animate-pulse space-y-2">
-                <div className="h-3 w-3/4 rounded bg-[#f0f4f3]" />
-                <div className="h-2.5 w-1/2 rounded bg-[#f0f4f3]" />
+          <div className="space-y-1" aria-hidden="true">
+            {[0, 1, 2].map((i) => (
+              <div key={i} className="-mx-3 animate-pulse rounded-lg px-3 py-3">
+                <div className="h-3 w-3/4 rounded bg-[#e8faf6]" />
+                <div className="mt-2 h-2.5 w-1/2 rounded bg-[#f0faf0]" />
               </div>
             ))}
           </div>
         ) : !items || items.length === 0 ? (
-          <div
-            className="px-4 py-8 text-center text-[12.5px] text-[#94a3b8]"
-            style={{ fontFamily: BODY_FONT }}
-          >
+          <p className="text-sm text-[#637489]">
             {items === null
               ? "Couldn't load recent activity."
               : 'No recent activity yet — actions you take will show up here.'}
-          </div>
+          </p>
         ) : (
-          <>
-            {items.map((item, i) => {
+          <div className="space-y-1">
+            {items.map((item) => {
               const s = STATUS_STYLES[item.status];
               return (
                 <div
                   key={item.id}
-                  className={`px-4 py-[13px] transition-colors hover:bg-[#f8fdfb] ${
-                    i < items.length - 1 ? 'border-b border-[#f0f4f3]' : ''
-                  }`}
-                  style={{ fontFamily: BODY_FONT }}
+                  className="flex cursor-default items-start justify-between rounded-lg px-3 py-3 -mx-3 transition-colors hover:bg-[#f0faf8]"
                 >
-                  <div className="mb-1 flex items-center justify-between gap-2">
-                    <span className="text-[12.5px] font-medium text-[#1a2e2a]">{item.summary}</span>
-                    <span
-                      className="shrink-0 whitespace-nowrap rounded-full px-[7px] py-[2px] text-[10.5px] font-semibold"
-                      style={{ background: s.bg, color: s.text }}
-                    >
-                      {s.label}
-                    </span>
+                  <div className="flex items-start gap-3">
+                    <div className="brand-gradient-bg mt-1.5 h-1.5 w-1.5 shrink-0 rounded-full" />
+                    <div>
+                      <p className="mb-0.5 text-sm font-medium leading-snug text-[#1e2d40]">
+                        {item.summary}
+                      </p>
+                      <p className="text-xs text-[#637489]">{metaLine(item)}</p>
+                    </div>
                   </div>
-                  <div className="flex items-center gap-1.5">
-                    {item.actor_name && (
-                      <>
-                        <span className="text-[11.5px] text-[#94a3b8]">by {item.actor_name}</span>
-                        <span className="text-[11.5px] text-[#cbd5e1]">·</span>
-                      </>
-                    )}
-                    <span className="text-[11.5px] text-[#94a3b8]">{relativeTime(item.created_at)}</span>
-                  </div>
+                  <span
+                    className="ml-3 mt-0.5 shrink-0 rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide"
+                    style={{ background: s.bg, color: s.text }}
+                  >
+                    {s.label}
+                  </span>
                 </div>
               );
             })}
-            <div className="border-t border-[#f0f4f3] px-4 py-[11px]">
-              <button
-                type="button"
-                className="text-[12.5px] font-semibold text-[#0d9488] hover:underline"
-                style={{ fontFamily: BODY_FONT }}
-              >
-                View all activity →
-              </button>
-            </div>
-          </>
+          </div>
         )}
+
+        <button
+          type="button"
+          className="group mt-4 flex items-center gap-1.5 text-sm font-medium text-[#00c9a7]"
+        >
+          <span>View all activity</span>
+          <span className="transition-transform duration-200 group-hover:translate-x-1">→</span>
+        </button>
       </div>
     </div>
   );
