@@ -1,28 +1,60 @@
 # Ticket Form Builder
 
-A standalone, runnable extraction from the mediaJira monorepo containing only:
+A full-stack customer support platform where admins design drag-and-drop ticket submission forms and manage incoming tickets, while customers submit requests through a public, no-login-required portal.
 
-- **Sign-in / sign-up** (email+password and Google OAuth, JWT-based)
-- **A simple user dashboard**, with an at-a-glance summary and a link into...
-- **The ticket form builder** - CSM admin-configurable form builder (drag-and-drop
-  field editor, project scoping, assignment to experience groups/support
-  channels) plus the public portal where customers submit requests against
-  those forms.
+## Features
 
-Everything else from mediaJira (tasks, decisions, campaigns, spreadsheets,
-meetings, chat, billing, every ad-platform integration, etc.) was
-intentionally left out. See "Known simplifications" below for exactly what
-was trimmed, stubbed, or simplified along the way.
+- **Drag-and-drop ticket form builder** — admins compose custom fields, scope forms to a project, and assign them to experience groups/support channels
+- **Public customer portal** — customers submit and track ticket requests against a published form, no account required
+- **Ticket management** — queues, SLA policies with breach detection, claim/reply/resolve workflow, and agent conversations
+- **Organizations & projects** — multi-tenant structure with role-based access control (RBAC) and team invitations
+- **Authentication** — email/password (JWT) and "Sign in with Google" OAuth
+- **Real-time ticket chat** — WebSocket-based updates via Django Channels
+- **Dashboard** — at-a-glance summary of tickets, forms, and activity
 
+## Demo
+
+- Homepage: ![homepage](assets/homepage.png)
+- Walkthrough: ![walkthrough](assets/walkthrough.gif)
+- Live site: [ticket-form-builder.vercel.app](https://ticket-form-builder.vercel.app)
+
+## Tech Stack
+
+- **Frontend:** Next.js 14 (App Router), React 18, TypeScript, Tailwind CSS, Radix UI, TanStack Query, Zustand, dnd-kit
+- **Backend:** Django 4.2, Django REST Framework, Django Channels, Gunicorn
+- **Database:** PostgreSQL (SQLite for local dev with zero config)
+- **Authentication:** JWT (`djangorestframework-simplejwt`) + Google OAuth 2.0
+- **Deployment:** Vercel (frontend), Render (backend + managed Postgres), Docker Compose (local/self-hosted)
+
+## Installation
+
+### Prerequisites
+
+- Python 3.11+
+- Node.js 20+
+- Docker (optional, for the one-command setup)
+
+### Option 1 — Docker (recommended, no local Python/Node setup)
+
+```bash
+git clone https://github.com/EasonQi777/ticket-form-builder.git
+cd ticket-form-builder
+docker compose up --build
 ```
-ticket-form-builder/
-├── backend/   Django project (Django 4.2, DRF, Channels)
-└── frontend/  Next.js 14 app router project
+
+- Frontend: `http://localhost:3000`
+- Backend: `http://localhost:8000`
+- Postgres: `localhost:5432`
+
+Create an admin user once the stack is up:
+
+```bash
+docker compose exec backend python manage.py createsuperuser
 ```
 
-## Setup
+### Option 2 — Manual setup
 
-### Backend
+**Backend**
 
 ```bash
 cd backend
@@ -31,25 +63,15 @@ venv\Scripts\activate            # Windows
 # source venv/bin/activate       # macOS/Linux
 
 pip install -r requirements.txt
-copy .env.example .env           # Windows; `cp` on macOS/Linux - defaults work out of the box
+copy .env.example .env           # Windows; `cp` on macOS/Linux — defaults work out of the box
 python manage.py migrate
 python manage.py createsuperuser
 python manage.py runserver
 ```
 
-That's it for local dev - with no `.env` changes at all, the backend boots
-against a local `db.sqlite3` file (no Postgres/Redis/Kafka required) and
-serves on `http://localhost:8000`. See `.env.example` for every variable
-it reads (Postgres connection, CORS origins, Google OAuth credentials, the
-organization-access-token secret/encryption keys, email settings).
+Runs against a local `db.sqlite3` file with zero config — no Postgres required for local dev. See `backend/.env.example` for every variable it reads.
 
-To run the copied test suite:
-
-```bash
-pytest
-```
-
-### Frontend
+**Frontend**
 
 ```bash
 cd frontend
@@ -58,88 +80,25 @@ copy .env.local.example .env.local   # Windows; `cp` on macOS/Linux
 npm run dev
 ```
 
-Serves on `http://localhost:3000` and talks to the backend via
-`NEXT_PUBLIC_API_URL` (defaults to `http://localhost:8000`). `npm run build`
-produces a production build; `npx tsc --noEmit` type-checks the project.
+Serves on `http://localhost:3000` and talks to the backend via `NEXT_PUBLIC_API_URL` (defaults to `http://localhost:8000`).
 
-### Docker
-
-Runs everything (Postgres + backend + frontend) in one command - no local
-Python/Node setup required:
-
-```bash
-docker compose up --build
-```
-
-- Frontend: `http://localhost:3000`
-- Backend: `http://localhost:8000`
-- Postgres: `localhost:5432` (db `ticket_form_builder`, user `postgres`,
-  password `postgres` by default)
-
-The backend container runs migrations automatically on startup. Create an
-admin user once the stack is up:
-
-```bash
-docker compose exec backend python manage.py createsuperuser
-```
-
-All the defaults baked into `docker-compose.yml` mirror `backend/.env.example`
-and `frontend/.env.local.example`. To override any of them (Google OAuth
-credentials, `SECRET_KEY`, SMTP settings, etc.), create a `.env` file next to
-`docker-compose.yml` - Compose loads it automatically - and set the same
-variable names.
-
-Note: the backend container serves over plain WSGI (`gunicorn`), same as
-`manage.py runserver` in local dev, so the csm websocket notifications are a
-no-op there too (see "Known simplifications" below). Swap the container's
-`CMD` for `daphne`/`uvicorn` if you need real ASGI/websocket support.
-
-To tear down (and optionally wipe the Postgres volume):
-
-```bash
-docker compose down        # keep data
-docker compose down -v     # also delete the Postgres volume
-```
-
-### First-run walkthrough
+### First run
 
 1. Register an account at `/register` (or log in at `/login`).
-2. You land on `/dashboard`.
-3. Because ticket forms are project-scoped, create/select a project at
-   `/select-project` first (registering auto-creates an organization for
-   you; "Create Project" uses the classic step-by-step form).
-4. From the dashboard, click through to **Ticket Form Builder**
-   (`/admin/ticket-forms`) to build a form.
-5. Create an **Experience Group** at `/admin/experience-groups`, assign the
-   ticket form to it, and publish it. Its preview page
-   (`/admin/experience-groups/[id]/preview`) is the public request-form URL
-   customers submit against - no login required.
-6. To test the CSM ticket workflow (claim/reply/resolve), create a
-   `CustomerOrganisation` via Django admin (`/admin/`) first - see "Known
-   simplifications" below.
+2. Create/select a project at `/select-project` (registering auto-creates an organization for you).
+3. Build a form under **Ticket Form Builder** (`/admin/ticket-forms`).
+4. Create an **Experience Group** at `/admin/experience-groups`, assign the form to it, and publish — its preview page is the public request-form URL customers submit against.
 
-## App mapping (mediaJira → this project)
+## Roadmap
 
-| Here | mediaJira app(s) | Notes |
-|---|---|---|
-| `backend/core` | `core` | Orgs, projects, members, invitations, RBAC scaffolding. Copied verbatim, then trimmed (see below). |
-| `backend/authentication` | `authentication` | Login/register/JWT/Google OAuth. `models.py` is empty; operates on `core.CustomUser`. |
-| `backend/access_control` | `access_control` | Role/Permission RBAC + `AuthorizationMiddleware`. Copied verbatim. |
-| `backend/customer` | `customer` | `CustomerOrganisation`/`Customer` - the CSM's client orgs and portal customer accounts. Copied verbatim. |
-| `backend/csm` | `csm` | The ticket form builder itself: `TicketForm`, `TicketFormField`, `TicketFormAssignment`, `TicketFormSubmission`, `Ticket`, `Queue`, `SLAPolicy`, `SupportChannel`, agent conversations. Copied verbatim. |
-| `backend/experience_group` | `experience_group` | `ExperienceGroup` + the public request-form/submit-request endpoints. Copied verbatim. |
-| `backend/notifications` | `notifications` (partial) | **Not** the real app - a tiny compatibility shim (`action_urls.py`, `models.py`, `services.py`) so `core`'s invite/removal flows still import successfully. No-ops, no DB table. |
-| `backend/authentication/org_token.py` | `stripe_meta/permissions.py` (one function) | Just `generate_organization_access_token`, copied verbatim since `stripe_meta` itself is out of scope. |
-| `backend/core/ws_auth_middleware.py` | `asset/middleware.py` | JWT websocket auth middleware, copied verbatim since `asset` itself is out of scope. |
-| `backend/dashboard` | *(new)* | Small new app: one endpoint, `GET /api/dashboard/summary/`, backing the frontend dashboard's stat tiles. |
-| `frontend/src/app/(auth)` | same | Login, register, forgot/reset/set password, verify, accept-invitation, unauthorized. |
-| `frontend/src/app/(portal)` | same | Public customer ticket-submission/login/my-tickets portal. |
-| `frontend/src/app/(project)/admin/ticket-forms`, `admin/experience-groups`, `select-project`, `dashboard` | same (`dashboard` is new) | Ticket form builder admin UI + project selection + the new dashboard page. |
-| `frontend/src/components/ticket-form` | same | The entire form builder + renderer + public portal variant. |
-| `frontend/src/components/dashboard/DashboardLayout.tsx` | same name, rewritten | Trimmed to a simple sidebar (Dashboard / Ticket Form Builder / Logout) - see below. |
+**Team members on experience groups + multi-project assignment**
 
-Everything else in mediaJira (`task`, `decision`, `spreadsheet`, `campaign`,
-`meetings`, `chat`, `stripe_meta`, `teams`, every ad-platform integration,
-Kafka/Celery messaging, etc.) has no counterpart here.
+Today an `ExperienceGroup` belongs to exactly one project and has no member list of its own — only org/project members (via `ProjectMember`) can manage it. The next milestone opens experience groups up to a wider team and lets admins staff the same person across several projects at once:
 
+- **Invite users directly into an experience group** — extend the existing invitation flow (`ProjectInvitation`) with an experience-group-scoped invite, so an admin can bring in agents/reviewers who only need access to a specific group's forms and tickets, not the whole project.
+- **Experience group membership & roles** — a new `ExperienceGroupMember` model (mirroring `ProjectMember`) tracking who's in a group and what they can do there (e.g. viewer, agent, manager), reusing the existing RBAC `Role`/`Permission` scaffolding in `access_control`.
+- **Admin: assign members to one or multiple projects** — an admin-facing screen to add an invited/existing user as a `ProjectMember` across several projects in one action, instead of inviting them separately per project.
+- **Cross-project view for members** — once a user belongs to multiple projects, the dashboard and project switcher need to reflect that (list all their projects, not assume one).
+- **Permission checks updated end-to-end** — `AuthorizationMiddleware` and ticket/form endpoints need to recognize experience-group-level membership, not just project-level, when deciding access.
 
+This is planned, not yet built — tracked here so scope and design decisions (schema for the new membership model, invite email flow, UI for multi-project assignment) stay visible as it's implemented.
